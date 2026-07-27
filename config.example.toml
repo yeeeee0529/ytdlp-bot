@@ -56,6 +56,8 @@ video_qualities = ["best", "2160p", "1440p", "1080p", "720p", "480p", "360p"]
 audio_bitrates = ["128k", "192k", "256k", "320k"]
 default_video_quality = "best"
 default_audio_bitrate = "320k"
+# Optional operator-managed Netscape cookie file. File references only.
+# cookie_file_ref = "file:/run/secrets/youtube_cookies.txt"
 network_attempts = 3
 worker_heartbeat_seconds = 15
 worker_stall_timeout_seconds = 90

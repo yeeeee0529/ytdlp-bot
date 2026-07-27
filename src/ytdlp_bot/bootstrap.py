@@ -412,6 +412,9 @@ async def bootstrap(
                 proxy_url=config.network.outbound_proxy,
                 network_attempts=config.media.network_attempts,
                 correlation_id=ids.correlation_id(),
+                cookie_file_path=(
+                    str(config.media.cookie_file) if config.media.cookie_file is not None else None
+                ),
             ),
             Sink(),
         )

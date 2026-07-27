@@ -34,8 +34,37 @@ uv run pytest
 - 容量不足時會先清除過期成品，再依 `ready_at` 最舊優先回收未在 HTTP 串流／平台上傳中的成品；仍不足才拒絕新預約
 - `artifacts.public_base_url` — HTTPS，不可含 query/fragment/結尾斜線
 - `artifacts.signing_secret_ref` — 至少 32 位元組熵
+- 選用的 `media.cookie_file_ref` — 指向營運者管理之 Netscape 格式 Cookie
+  檔案的絕對 `file:` reference
 - 至少啟用一個平台並提供 token
 - 靜態 `access.administrators` 無法透過聊天指令變更
+
+### 選用的登入媒體支援
+
+若要讓 yt-dlp 使用營運者管理的登入 session，請將 Netscape 格式 Cookie
+檔案放入既有的唯讀 secrets 掛載：
+
+```text
+secrets/youtube_cookies.txt
+```
+
+在主機上設定嚴格的檔案權限，再於 `config.toml` 啟用：
+
+```toml
+[media]
+cookie_file_ref = "file:/run/secrets/youtube_cookies.txt"
+```
+
+系統只接受絕對 `file:` reference。Cookie 內容不會載入
+`EffectiveConfig`、送入 worker protocol、開放聊天指令設定，或出現在啟動
+摘要中；worker 只接收 Cookie 檔案路徑，並由 yt-dlp 在處理工作時開啟該
+唯讀檔案。yt-dlp 的 Cookie jar 回寫功能已停用；更新或輪替掛載檔案時應
+採用受控部署流程。
+
+請使用權限最小化的專用帳號。所有獲授權的 Bot 使用者都可能間接使用該
+帳號的媒體權益，大量下載也可能造成帳號受限。若 session 疑似外洩，請
+立即撤銷或輪替 Cookie 檔案。Cookies 可改善需要帳號權限的內容，但無法
+讓已刪除、無權存取、受 DRM 保護或本身不可用的媒體變得可下載。
 
 ## 部署
 
@@ -52,6 +81,8 @@ docker compose up -d
 
 - 必須強制控制出口網路；僅 URL 驗證不足。
 - 日誌不得出現 bot token、簽章密鑰、完整 bearer URL 或敏感來源 URL 元件。
+- 登入 Cookie 檔案應視同帳號憑證：不得提交版本控制、寫入映像，或設為
+  world-writable。
 - 應用程式以非 root、唯讀根檔案系統期望執行。
 
 ## 告警與操作手冊

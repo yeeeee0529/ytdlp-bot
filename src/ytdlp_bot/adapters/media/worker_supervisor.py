@@ -45,6 +45,7 @@ class ProcessWorkerSupervisor:
             network_attempts=request.network_attempts,
             correlation_id=request.correlation_id,
             playlist_enabled=request.playlist_enabled,
+            cookie_file_path=request.cookie_file_path,
         )
         env = os.environ.copy()
         if self.fixture_mode:
@@ -242,6 +243,7 @@ class InProcessWorkerSupervisor:
             network_attempts=request.network_attempts,
             correlation_id=request.correlation_id,
             playlist_enabled=request.playlist_enabled,
+            cookie_file_path=request.cookie_file_path,
         )
         runner = self.runner or default_fixture_runner
         task = asyncio.create_task(self._run(msg, sink, runner, request.job_id.value))

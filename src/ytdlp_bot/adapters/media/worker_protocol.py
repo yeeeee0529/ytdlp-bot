@@ -23,12 +23,16 @@ class WorkerRequestMessage:
     network_attempts: int = 3
     correlation_id: str = ""
     playlist_enabled: bool = True
+    cookie_file_path: str | None = None
 
     def to_json_line(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":"))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WorkerRequestMessage:
+        cookie_file_path = data.get("cookie_file_path")
+        if cookie_file_path is not None and not isinstance(cookie_file_path, str):
+            raise ValueError("cookie_file_path must be string or null")
         return cls(
             job_id=str(data["job_id"]),
             source_url=str(data["source_url"]),
@@ -40,6 +44,7 @@ class WorkerRequestMessage:
             network_attempts=int(data.get("network_attempts", 3)),
             correlation_id=str(data.get("correlation_id", "")),
             playlist_enabled=bool(data.get("playlist_enabled", True)),
+            cookie_file_path=cookie_file_path,
         )
 
 
@@ -93,6 +98,7 @@ def request_from_domain(
     proxy_url: str | None,
     network_attempts: int,
     correlation_id: str,
+    cookie_file_path: str | None = None,
 ) -> WorkerRequestMessage:
     return WorkerRequestMessage(
         job_id=job_id.value,
@@ -104,6 +110,7 @@ def request_from_domain(
         proxy_url=proxy_url,
         network_attempts=network_attempts,
         correlation_id=correlation_id,
+        cookie_file_path=cookie_file_path,
     )
 
 

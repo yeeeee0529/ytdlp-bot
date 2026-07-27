@@ -1,7 +1,8 @@
 # Single-host Compose for this deployment.
 # Aligns with config.toml: Telegram only, HTTP 62080, no outbound proxy sidecar.
-# Secrets via files under ./secrets (not env values). Reverse TLS for
-# https://ytdl.oh4ma.net is expected in front of host port 62080.
+# Secrets via files under ./secrets (not env values), including the optional
+# yt-dlp cookie file. Reverse TLS for https://ytdl.oh4ma.net is expected in
+# front of host port 62080.
 
 services:
   # Named volumes are root-owned on first create; app runs as uid 10001.

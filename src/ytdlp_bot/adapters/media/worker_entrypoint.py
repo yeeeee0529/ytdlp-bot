@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace=str(workspace),
             proxy_url=req.proxy_url,
             network_attempts=req.network_attempts,
+            cookie_file=req.cookie_file_path,
         )
         # Fixture mode for deterministic CI: YTDLP_BOT_FIXTURE_WORKER=1
         import os

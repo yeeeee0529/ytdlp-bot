@@ -101,8 +101,116 @@ def test_load_minimal_valid(tmp_path: Path) -> None:
     assert cfg.app.worker_concurrency == 2
     assert cfg.platforms[Platform.TELEGRAM].enabled is True
     assert cfg.artifacts.public_base_url == "https://downloads.example.invalid"
+    assert cfg.media.cookie_file is None
+    assert cfg.startup_summary()["cookie_file_configured"] is False
     assert "telegram-token-canary" not in str(cfg.startup_summary())
     assert "S" * 32 not in str(cfg.startup_summary())
+
+
+@pytest.mark.unit
+def test_cookie_file_ref_is_file_only_and_redacted_from_summary(tmp_path: Path) -> None:
+    _, reader = _secrets()
+    cfg_path, art, db = _layout(tmp_path)
+    cookie_file = tmp_path / "secrets" / "youtube-cookie-canary.txt"
+    cookie_file.parent.mkdir()
+    cookie_file.write_text(
+        "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-canary\n",
+        encoding="utf-8",
+    )
+    cookie_file.chmod(0o600)
+    text = minimal_valid_toml(artifact_root=str(art), database_path=str(db))
+    text = text.replace(
+        'default_audio_bitrate = "320k"',
+        (f'default_audio_bitrate = "320k"\ncookie_file_ref = "file:{cookie_file}"'),
+    )
+
+    cfg = load_static_config(
+        text,
+        config_path=cfg_path,
+        secret_reader=reader,  # type: ignore[arg-type]
+        check_writable=False,
+    )
+
+    assert cfg.media.cookie_file == cookie_file.resolve()
+    summary = str(cfg.startup_summary())
+    assert "'cookie_file_configured': True" in summary
+    assert cookie_file.name not in summary
+    assert "secret-canary" not in summary
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "cookie_ref",
+    [
+        "env:YOUTUBE_COOKIES",
+        "relative/cookies.txt",
+        "file:relative/cookies.txt",
+    ],
+)
+def test_cookie_file_ref_rejects_non_file_or_relative_refs(
+    tmp_path: Path,
+    cookie_ref: str,
+) -> None:
+    _, reader = _secrets()
+    cfg_path, art, db = _layout(tmp_path)
+    text = minimal_valid_toml(artifact_root=str(art), database_path=str(db))
+    text = text.replace(
+        'default_audio_bitrate = "320k"',
+        f'default_audio_bitrate = "320k"\ncookie_file_ref = "{cookie_ref}"',
+    )
+
+    with pytest.raises(ConfigurationError, match=r"file secret reference|absolute"):
+        load_static_config(
+            text,
+            config_path=cfg_path,
+            secret_reader=reader,  # type: ignore[arg-type]
+            check_writable=False,
+        )
+
+
+@pytest.mark.unit
+def test_cookie_file_ref_rejects_world_writable_file(tmp_path: Path) -> None:
+    _, reader = _secrets()
+    cfg_path, art, db = _layout(tmp_path)
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    cookie_file.chmod(0o666)
+    text = minimal_valid_toml(artifact_root=str(art), database_path=str(db))
+    text = text.replace(
+        'default_audio_bitrate = "320k"',
+        (f'default_audio_bitrate = "320k"\ncookie_file_ref = "file:{cookie_file}"'),
+    )
+
+    with pytest.raises(ConfigurationError, match="world-writable"):
+        load_static_config(
+            text,
+            config_path=cfg_path,
+            secret_reader=reader,  # type: ignore[arg-type]
+            check_writable=False,
+        )
+
+
+@pytest.mark.unit
+def test_cookie_file_ref_validation_does_not_read_secret_contents(tmp_path: Path) -> None:
+    _, reader = _secrets()
+    cfg_path, art, db = _layout(tmp_path)
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_bytes(b"\xff\xfe\xfd")
+    cookie_file.chmod(0o600)
+    text = minimal_valid_toml(artifact_root=str(art), database_path=str(db))
+    text = text.replace(
+        'default_audio_bitrate = "320k"',
+        (f'default_audio_bitrate = "320k"\ncookie_file_ref = "file:{cookie_file}"'),
+    )
+
+    cfg = load_static_config(
+        text,
+        config_path=cfg_path,
+        secret_reader=reader,  # type: ignore[arg-type]
+        check_writable=False,
+    )
+
+    assert cfg.media.cookie_file == cookie_file
 
 
 @pytest.mark.unit

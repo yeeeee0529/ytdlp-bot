@@ -34,8 +34,40 @@ Required highlights:
 - Under capacity pressure, expired artifacts are removed first, then oldest non-expired by `ready_at`, skipping active HTTP stream / platform upload leases; only then is a new reservation denied
 - `artifacts.public_base_url` — HTTPS, no query/fragment/trailing slash
 - `artifacts.signing_secret_ref` — ≥ 32 bytes entropy
+- Optional `media.cookie_file_ref` — absolute `file:` reference to an
+  operator-managed Netscape-format cookie file
 - At least one platform enabled with a token secret
 - Static `access.administrators` cannot be changed via chat
+
+### Optional authenticated media
+
+To let yt-dlp use an operator-managed authenticated session, place a
+Netscape-format cookie file under the existing read-only secrets mount:
+
+```text
+secrets/youtube_cookies.txt
+```
+
+Set restrictive host permissions, then enable it in `config.toml`:
+
+```toml
+[media]
+cookie_file_ref = "file:/run/secrets/youtube_cookies.txt"
+```
+
+Only absolute `file:` references are accepted. Cookie contents are not loaded
+into `EffectiveConfig`, sent through the worker protocol, exposed to chat
+commands, or included in startup summaries. The cookie-file path is passed to
+the worker, and yt-dlp opens the read-only file when processing a job. yt-dlp
+cookie-jar write-back is disabled; update or rotate the mounted file through a
+controlled deployment.
+
+Use a dedicated account with the minimum required access. Every authorized bot
+user can indirectly use the account's media entitlements, and high-volume use
+can result in account restrictions. Rotate or remove the cookie file if the
+session is exposed. Cookies may help with account-required content but do not
+make deleted, inaccessible, DRM-protected, or otherwise unavailable media
+downloadable.
 
 ## Deployment
 
@@ -52,6 +84,8 @@ Health: private `/healthz` (liveness) and `/readyz` (readiness). Public download
 
 - Controlled egress is mandatory; URL validation alone is insufficient.
 - Logs must never contain bot tokens, signing secrets, complete bearer URLs, or sensitive source URL components.
+- Treat an authenticated cookie file as an account credential: never commit it,
+  bake it into the image, or make it world-writable.
 - Run the app as non-root with a read-only root filesystem expectation.
 
 ## Alerts and runbooks

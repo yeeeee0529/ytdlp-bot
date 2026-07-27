@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -33,6 +34,13 @@ _FORBIDDEN_OPTION_KEYS: Final[frozenset[str]] = frozenset(
         "remote_components",
     }
 )
+_COOKIE_FILE_HEADERS: Final[frozenset[str]] = frozenset(
+    {
+        "# HTTP Cookie File",
+        "# Netscape HTTP Cookie File",
+    }
+)
+_HTTPONLY_PREFIX: Final[str] = "#HttpOnly_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,11 +48,50 @@ class YtdlpOptions:
     """Trusted options dict for yt-dlp Python API."""
 
     raw: dict[str, Any]
+    cookie_file: str | None = None
 
     def assert_allowlisted(self) -> None:
         for key in self.raw:
             if key in _FORBIDDEN_OPTION_KEYS:
                 raise ValueError(f"forbidden yt-dlp option: {key}")
+        if self.cookie_file is not None:
+            if not isinstance(self.cookie_file, str) or not self.cookie_file:
+                raise ValueError("cookie file path must be a non-empty string")
+            if not Path(self.cookie_file).is_absolute():
+                raise ValueError("cookie file path must be absolute")
+
+    def materialize(self) -> dict[str, Any]:
+        """Build the final yt-dlp options from trusted structured fields."""
+        self.assert_allowlisted()
+        opts = dict(self.raw)
+        if self.cookie_file is not None:
+            opts["cookiefile"] = self.cookie_file
+        return opts
+
+
+def validate_cookie_file(cookie_file: str) -> None:
+    """Validate Netscape cookie structure without exposing line contents."""
+    try:
+        with Path(cookie_file).open(encoding="utf-8") as handle:
+            header = handle.readline().rstrip("\r\n")
+            if header not in _COOKIE_FILE_HEADERS:
+                raise ValueError("cookie file must use Netscape format")
+            for line in handle:
+                candidate = line.rstrip("\r\n")
+                if candidate.startswith(_HTTPONLY_PREFIX):
+                    candidate = candidate[len(_HTTPONLY_PREFIX) :]
+                elif not candidate or candidate.startswith("#"):
+                    continue
+                fields = candidate.split("\t")
+                if len(fields) != 7:
+                    raise ValueError("cookie file contains an invalid entry")
+                expires = fields[4]
+                if expires and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", expires) is None:
+                    raise ValueError("cookie file contains an invalid expiry")
+    except ValueError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("cookie file could not be read") from exc
 
 
 def build_ytdlp_options(
@@ -54,6 +101,7 @@ def build_ytdlp_options(
     proxy_url: str | None,
     network_attempts: int,
     outtmpl: str,
+    cookie_file: str | None = None,
 ) -> YtdlpOptions:
     """Build a locked-down yt-dlp option dictionary."""
     attempts = max(1, min(int(network_attempts), 3))
@@ -94,7 +142,7 @@ def build_ytdlp_options(
     if proxy_url:
         opts["proxy"] = proxy_url
     # Never pass arbitrary user flags.
-    result = YtdlpOptions(raw=opts)
+    result = YtdlpOptions(raw=opts, cookie_file=cookie_file)
     result.assert_allowlisted()
     return result
 
@@ -107,6 +155,7 @@ def options_for_request(
     workspace: str,
     proxy_url: str | None,
     network_attempts: int,
+    cookie_file: str | None = None,
 ) -> YtdlpOptions:
     from ytdlp_bot.domain.enums import AudioBitrate, VideoQuality
 
@@ -124,6 +173,7 @@ def options_for_request(
         proxy_url=proxy_url,
         network_attempts=network_attempts,
         outtmpl=tmpl,
+        cookie_file=cookie_file,
     )
 
 
@@ -206,13 +256,22 @@ def run_ytdlp_download(
     from yt_dlp import YoutubeDL  # type: ignore[import-untyped]
 
     options.assert_allowlisted()
+    if options.cookie_file is not None:
+        validate_cookie_file(options.cookie_file)
     workspace.mkdir(parents=True, exist_ok=True)
     before = {p.resolve() for p in workspace.rglob("*") if p.is_file()}
-    opts = dict(options.raw)
+    opts = options.materialize()
     opts["paths"] = {"home": str(workspace)}
     extracted: object | None = None
     with YoutubeDL(opts) as ydl:
-        extracted = ydl.extract_info(source_url, download=True)
+        try:
+            extracted = ydl.extract_info(source_url, download=True)
+        finally:
+            # yt-dlp normally writes its in-memory jar back to cookiefile on
+            # close. Operator-managed secret files are immutable and shared
+            # across workers, so they must remain read-only.
+            if options.cookie_file is not None:
+                ydl.params.pop("cookiefile", None)
     after = [p for p in workspace.rglob("*") if p.is_file() and p.resolve() not in before]
     if not after:
         # Fallback: any media-like file in workspace.

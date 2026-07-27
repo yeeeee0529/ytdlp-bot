@@ -19,11 +19,13 @@ from ytdlp_bot.adapters.media.ffmpeg_engine import (
     verify_mp4,
 )
 from ytdlp_bot.adapters.media.ytdlp_engine import (
+    YtdlpOptions,
     build_ytdlp_options,
     classify_ytdlp_error,
     inspect_metadata_fixture,
     options_for_request,
     progress_hook_to_event,
+    run_ytdlp_download,
 )
 from ytdlp_bot.application.progress_reporter import ProgressReporter
 from ytdlp_bot.domain.enums import AudioBitrate, JobState, MediaMode, Platform, VideoQuality
@@ -164,6 +166,136 @@ def test_ytdlp_options_lockdown() -> None:
     )
     assert hook["payload"]["downloaded_bytes"] == 10
     assert hook["sequence"] == 3
+
+
+@pytest.mark.unit
+def test_ytdlp_cookiefile_is_materialized_only_from_trusted_field() -> None:
+    sel = build_format_selection(MediaMode.VIDEO, quality=VideoQuality.P720)
+    opts = build_ytdlp_options(
+        sel,
+        workspace="/tmp/ws",
+        proxy_url=None,
+        network_attempts=1,
+        outtmpl="/tmp/ws/%(id)s.%(ext)s",
+        cookie_file="/run/secrets/youtube_cookies.txt",
+    )
+
+    assert "cookiefile" not in opts.raw
+    assert opts.materialize()["cookiefile"] == "/run/secrets/youtube_cookies.txt"
+    with pytest.raises(ValueError, match="forbidden yt-dlp option"):
+        YtdlpOptions(raw={"cookiefile": "/tmp/untrusted.txt"}).assert_allowlisted()
+    with pytest.raises(ValueError, match="absolute"):
+        build_ytdlp_options(
+            sel,
+            workspace="/tmp/ws",
+            proxy_url=None,
+            network_attempts=1,
+            outtmpl="/tmp/ws/%(id)s.%(ext)s",
+            cookie_file="relative/cookies.txt",
+        )
+
+
+@pytest.mark.unit
+def test_options_for_request_forwards_cookie_file() -> None:
+    opts = options_for_request(
+        mode=MediaMode.VIDEO,
+        quality=VideoQuality.P720,
+        bitrate=None,
+        workspace="/tmp/ws",
+        proxy_url=None,
+        network_attempts=1,
+        cookie_file="/run/secrets/youtube_cookies.txt",
+    )
+
+    assert opts.cookie_file == "/run/secrets/youtube_cookies.txt"
+    assert opts.materialize()["cookiefile"] == "/run/secrets/youtube_cookies.txt"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("extract_fails", [False, True])
+def test_run_ytdlp_never_writes_cookie_secret(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    extract_fails: bool,
+) -> None:
+    from yt_dlp import YoutubeDL
+
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_bytes = (
+        b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tcookie-canary\n"
+    )
+    cookie_file.write_bytes(cookie_bytes)
+    cookie_file.chmod(0o400)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    save_cookiefile_values: list[object] = []
+    original_save_cookies = YoutubeDL.save_cookies
+
+    def fake_extract_info(self, url: str, *, download: bool):
+        _ = (self, url, download)
+        if extract_fails:
+            raise RuntimeError("fixture extraction failed")
+        (workspace / "fixture.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        return {"title": "fixture"}
+
+    def recording_save_cookies(self):
+        save_cookiefile_values.append(self.params.get("cookiefile"))
+        return original_save_cookies(self)
+
+    monkeypatch.setattr(YoutubeDL, "extract_info", fake_extract_info)
+    monkeypatch.setattr(YoutubeDL, "save_cookies", recording_save_cookies)
+    opts = options_for_request(
+        mode=MediaMode.VIDEO,
+        quality=VideoQuality.P720,
+        bitrate=None,
+        workspace=str(workspace),
+        proxy_url=None,
+        network_attempts=1,
+        cookie_file=str(cookie_file),
+    )
+
+    if extract_fails:
+        with pytest.raises(RuntimeError, match="fixture extraction failed"):
+            run_ytdlp_download("https://example.com/video", opts, workspace=workspace)
+    else:
+        output, title = run_ytdlp_download(
+            "https://example.com/video",
+            opts,
+            workspace=workspace,
+        )
+        assert output.name == "fixture.mp4"
+        assert title == "fixture"
+
+    assert save_cookiefile_values == [None]
+    assert cookie_file.read_bytes() == cookie_bytes
+
+
+@pytest.mark.unit
+def test_malformed_cookie_entry_never_reaches_stderr(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text(
+        "# Netscape HTTP Cookie File\nmalformed-cookie-canary\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    opts = options_for_request(
+        mode=MediaMode.VIDEO,
+        quality=VideoQuality.P720,
+        bitrate=None,
+        workspace=str(workspace),
+        proxy_url=None,
+        network_attempts=1,
+        cookie_file=str(cookie_file),
+    )
+
+    with pytest.raises(ValueError, match="invalid entry"):
+        run_ytdlp_download("https://example.com/video", opts, workspace=workspace)
+
+    captured = capsys.readouterr()
+    assert "malformed-cookie-canary" not in captured.err
 
 
 @pytest.mark.unit

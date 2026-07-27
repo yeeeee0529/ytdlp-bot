@@ -24,6 +24,7 @@ class WorkerRequest:
     network_attempts: int
     correlation_id: str
     playlist_enabled: bool = True
+    cookie_file_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

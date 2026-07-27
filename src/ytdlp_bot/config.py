@@ -176,6 +176,7 @@ class MediaConfig:
     network_attempts: int
     worker_heartbeat_seconds: int
     worker_stall_timeout_seconds: int
+    cookie_file: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +232,7 @@ class EffectiveConfig:
             "runtime_override_keys": sorted(self.runtime_overrides.keys()),
             "signing_secret_configured": bool(self.artifacts.signing_secret),
             "outbound_proxy_configured": bool(self.network.outbound_proxy),
+            "cookie_file_configured": self.media.cookie_file is not None,
         }
 
 
@@ -272,6 +274,43 @@ def default_secret_reader(ref: str) -> str:
             raise ConfigurationError(f"empty secret file: {path.name}")
         return text
     raise ConfigurationError("unsupported secret reference scheme")
+
+
+def resolve_secret_file_path(ref: str, *, field_name: str) -> Path:
+    """Validate a file-backed secret reference without reading its contents."""
+    if not ref.startswith("file:"):
+        raise ConfigurationError(
+            f"{field_name} must use a file secret reference",
+            field=field_name,
+        )
+    raw_path = ref[5:]
+    if not raw_path:
+        raise ConfigurationError(f"{field_name} path is empty", field=field_name)
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise ConfigurationError(f"{field_name} path must be absolute", field=field_name)
+    if not path.is_file():
+        raise ConfigurationError(f"secret file not found: {path.name}", field=field_name)
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ConfigurationError(
+            f"cannot stat secret file: {path.name}",
+            field=field_name,
+        ) from exc
+    if stat.st_size <= 0:
+        raise ConfigurationError(f"empty secret file: {path.name}", field=field_name)
+    if stat.st_mode & 0o002:
+        raise ConfigurationError(
+            f"secret file is world-writable: {path.name}",
+            field=field_name,
+        )
+    if not os.access(path, os.R_OK):
+        raise ConfigurationError(
+            f"secret file is not readable: {path.name}",
+            field=field_name,
+        )
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +649,18 @@ def load_static_config(
     )
 
     media_raw = _require_mapping(data.get("media", {}), "media")
+    cookie_file: Path | None = None
+    cookie_file_ref = media_raw.get("cookie_file_ref")
+    if cookie_file_ref is not None:
+        if not isinstance(cookie_file_ref, str):
+            raise ConfigurationError(
+                "cookie_file_ref must be string",
+                field="cookie_file_ref",
+            )
+        cookie_file = resolve_secret_file_path(
+            cookie_file_ref,
+            field_name="cookie_file_ref",
+        )
     vq = media_raw.get(
         "video_qualities",
         ["best", "2160p", "1440p", "1080p", "720p", "480p", "360p"],
@@ -632,6 +683,7 @@ def load_static_config(
         worker_stall_timeout_seconds=_get_int(
             media_raw, "worker_stall_timeout_seconds", 90, lo=30, hi=600
         ),
+        cookie_file=cookie_file,
     )
 
     access_raw = _require_mapping(data.get("access", {}), "access")
