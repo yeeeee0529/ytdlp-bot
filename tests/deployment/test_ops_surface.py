@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,13 @@ def test_dockerfile_and_compose_exist() -> None:
     assert "ffmpeg" in text
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert "services:" in compose
+
+
+@pytest.mark.unit
+def test_production_dependencies_include_youtube_js_runtime() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    dependencies = project["dependencies"]
+    assert any(dependency.startswith("yt-dlp[default,deno]") for dependency in dependencies)
 
 
 @pytest.mark.unit

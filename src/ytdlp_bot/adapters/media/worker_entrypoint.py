@@ -11,8 +11,12 @@ from pathlib import Path
 from ytdlp_bot.adapters.media.archive import build_artifact_display_name
 from ytdlp_bot.adapters.media.ffmpeg_engine import ensure_local_input, probe_media
 from ytdlp_bot.adapters.media.worker_protocol import WorkerRequestMessage, parse_ndjson_line
-from ytdlp_bot.adapters.media.ytdlp_engine import options_for_request, run_ytdlp_download
-from ytdlp_bot.domain.enums import AudioBitrate, MediaMode, VideoQuality, WorkerPhase
+from ytdlp_bot.adapters.media.ytdlp_engine import (
+    classify_ytdlp_error,
+    options_for_request,
+    run_ytdlp_download,
+)
+from ytdlp_bot.domain.enums import AudioBitrate, FailureCode, MediaMode, VideoQuality, WorkerPhase
 
 
 def _emit(
@@ -32,6 +36,7 @@ def _emit(
 def main(argv: list[str] | None = None) -> int:
     """Read one WorkerRequest JSON line from stdin and process media."""
     _ = argv
+    current_phase = WorkerPhase.INSPECTING
     try:
         line = sys.stdin.readline()
         if not line:
@@ -56,8 +61,9 @@ def main(argv: list[str] | None = None) -> int:
         workspace = Path(req.workspace_path)
         workspace.mkdir(parents=True, exist_ok=True)
 
-        emit("phase_changed", phase=WorkerPhase.INSPECTING.value)
-        emit("phase_changed", phase=WorkerPhase.DOWNLOADING.value)
+        emit("phase_changed", phase=current_phase.value)
+        current_phase = WorkerPhase.DOWNLOADING
+        emit("phase_changed", phase=current_phase.value)
 
         opts = options_for_request(
             mode=mode,
@@ -84,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
                 name = "video.mp4"
         else:
             out, media_title = run_ytdlp_download(req.source_url, opts, workspace=workspace)
-            emit("phase_changed", phase=WorkerPhase.POST_PROCESSING.value)
+            current_phase = WorkerPhase.POST_PROCESSING
+            emit("phase_changed", phase=current_phase.value)
             local = ensure_local_input(str(out), workspace_root=str(workspace))
             probe = probe_media(local)
             if mode is MediaMode.VIDEO and not probe.has_video and probe.has_audio:
@@ -113,11 +120,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         sys.stderr.write(f"worker failed: {type(exc).__name__}: {exc}\n")
         sys.stderr.write(traceback.format_exc()[-500:])
+        error_code = FailureCode.INTERNAL_ERROR.value
+        with contextlib.suppress(ImportError):
+            from yt_dlp.utils import DownloadError  # type: ignore[import-untyped]
+
+            if isinstance(exc, DownloadError):
+                error_code = classify_ytdlp_error(str(exc))
         with contextlib.suppress(Exception):
             emit(
                 "worker_failed",
-                phase=WorkerPhase.POST_PROCESSING.value,
-                error_code="INTERNAL_ERROR",
+                phase=current_phase.value,
+                error_code=error_code,
             )
         return 1
 

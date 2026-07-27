@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import io
+import json
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from ytdlp_bot.adapters.media import worker_entrypoint
 from ytdlp_bot.adapters.media.ffmpeg_engine import (
     FfmpegError,
     FfmpegOp,
@@ -18,6 +22,7 @@ from ytdlp_bot.adapters.media.ffmpeg_engine import (
     verify_mp3,
     verify_mp4,
 )
+from ytdlp_bot.adapters.media.worker_protocol import WorkerRequestMessage
 from ytdlp_bot.adapters.media.ytdlp_engine import (
     YtdlpOptions,
     build_ytdlp_options,
@@ -141,8 +146,9 @@ def test_ytdlp_options_lockdown() -> None:
     )
     assert o2.raw["postprocessors"]
     assert "%(title)" in str(o2.raw["outtmpl"])
-    assert classify_ytdlp_error("Sign in to confirm") == "AUTH_REQUIRED"
-    assert classify_ytdlp_error("network timeout") == "NETWORK_ERROR"
+    assert classify_ytdlp_error("Sign in to confirm") == "AUTHENTICATION_REQUIRED"
+    assert classify_ytdlp_error("network timeout") == "DOWNLOAD_FAILED"
+    assert classify_ytdlp_error("Requested format is not available") == "NO_MATCHING_FORMAT"
     meta = inspect_metadata_fixture(
         {
             "title": "x" * 300,
@@ -271,16 +277,117 @@ def test_run_ytdlp_never_writes_cookie_secret(
 
 
 @pytest.mark.unit
+def test_run_ytdlp_retries_with_cookie_only_when_authentication_is_required(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
+
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_bytes = (
+        b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tcookie-canary\n"
+    )
+    cookie_file.write_bytes(cookie_bytes)
+    cookie_file.chmod(0o400)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cookiefile_values: list[object] = []
+    save_cookiefile_values: list[object] = []
+    original_save_cookies = YoutubeDL.save_cookies
+
+    def fake_extract_info(self, url: str, *, download: bool):
+        _ = (url, download)
+        cookiefile_values.append(self.params.get("cookiefile"))
+        if len(cookiefile_values) == 1:
+            raise DownloadError("Sign in to confirm your age")
+        (workspace / "fixture.mp3").write_bytes(b"ID3" + b"\x00" * 32)
+        return {"title": "fixture"}
+
+    def recording_save_cookies(self):
+        save_cookiefile_values.append(self.params.get("cookiefile"))
+        return original_save_cookies(self)
+
+    monkeypatch.setattr(YoutubeDL, "extract_info", fake_extract_info)
+    monkeypatch.setattr(YoutubeDL, "save_cookies", recording_save_cookies)
+    opts = options_for_request(
+        mode=MediaMode.AUDIO,
+        quality=None,
+        bitrate=AudioBitrate.K320,
+        workspace=str(workspace),
+        proxy_url=None,
+        network_attempts=1,
+        cookie_file=str(cookie_file),
+    )
+
+    output, title = run_ytdlp_download(
+        "https://example.com/video",
+        opts,
+        workspace=workspace,
+    )
+
+    assert output.name == "fixture.mp3"
+    assert title == "fixture"
+    assert cookiefile_values == [None, str(cookie_file)]
+    assert save_cookiefile_values == [None, None]
+    assert cookie_file.read_bytes() == cookie_bytes
+
+
+@pytest.mark.unit
+def test_run_ytdlp_does_not_retry_non_authentication_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = 0
+
+    def fake_extract_info(self, url: str, *, download: bool):
+        nonlocal calls
+        _ = (self, url, download)
+        calls += 1
+        raise DownloadError("Requested format is not available")
+
+    monkeypatch.setattr(YoutubeDL, "extract_info", fake_extract_info)
+    opts = options_for_request(
+        mode=MediaMode.AUDIO,
+        quality=None,
+        bitrate=AudioBitrate.K320,
+        workspace=str(workspace),
+        proxy_url=None,
+        network_attempts=1,
+        cookie_file=str(tmp_path / "unused-cookies.txt"),
+    )
+
+    with pytest.raises(DownloadError, match="Requested format"):
+        run_ytdlp_download("https://example.com/video", opts, workspace=workspace)
+
+    assert calls == 1
+
+
+@pytest.mark.unit
 def test_malformed_cookie_entry_never_reaches_stderr(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
+
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text(
         "# Netscape HTTP Cookie File\nmalformed-cookie-canary\n",
         encoding="utf-8",
     )
     workspace = tmp_path / "workspace"
+    monkeypatch.setattr(
+        YoutubeDL,
+        "extract_info",
+        lambda self, url, *, download: (_ for _ in ()).throw(DownloadError("Sign in to confirm")),
+    )
     opts = options_for_request(
         mode=MediaMode.VIDEO,
         quality=VideoQuality.P720,
@@ -296,6 +403,41 @@ def test_malformed_cookie_entry_never_reaches_stderr(
 
     captured = capsys.readouterr()
     assert "malformed-cookie-canary" not in captured.err
+
+
+@pytest.mark.unit
+def test_worker_reports_download_error_with_downloading_phase(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from yt_dlp.utils import DownloadError
+
+    request = WorkerRequestMessage(
+        job_id="J" * 22,
+        source_url="https://example.com/video",
+        mode=MediaMode.AUDIO.value,
+        audio_bitrate=AudioBitrate.K320.value,
+        workspace_path=str(tmp_path),
+        network_attempts=1,
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(request.to_json_line() + "\n"))
+    monkeypatch.setattr(
+        worker_entrypoint,
+        "run_ytdlp_download",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DownloadError("Requested format is not available")
+        ),
+    )
+
+    assert worker_entrypoint.main([]) == 1
+
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.out.splitlines()]
+    failure = events[-1]
+    assert failure["type"] == "worker_failed"
+    assert failure["phase"] == "downloading"
+    assert failure["payload"]["error_code"] == "NO_MATCHING_FORMAT"
 
 
 @pytest.mark.unit

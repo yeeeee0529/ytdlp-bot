@@ -8,7 +8,7 @@ Self-hosted Telegram and Discord media download bot. Users submit public HTTP(S)
 
 - Linux host with Docker and Docker Compose
 - CPython 3.13 + [uv](https://github.com/astral-sh/uv) for development
-- FFmpeg / ffprobe (image-bundled for deployment)
+- FFmpeg / ffprobe, Deno, and the yt-dlp EJS challenge solver (image-bundled)
 - Operator-chosen `capacity_bytes` within host disk limits
 
 ## Quick start (development)
@@ -61,6 +61,14 @@ commands, or included in startup summaries. The cookie-file path is passed to
 the worker, and yt-dlp opens the read-only file when processing a job. yt-dlp
 cookie-jar write-back is disabled; update or rotate the mounted file through a
 controlled deployment.
+
+Downloads first use an anonymous attempt without Cookies. The worker validates
+and uses the operator Cookie file for one retry only when yt-dlp explicitly
+classifies the source as requiring authentication. This reduces account-session
+use and avoids applying logged-in YouTube client format restrictions to public
+media. The deployment image includes yt-dlp's recommended Deno runtime and a
+version-compatible `yt-dlp-ejs` package for YouTube JavaScript challenges.
+Update and re-lock these components together when upgrading yt-dlp.
 
 Use a dedicated account with the minimum required access. Every authorized bot
 user can indirectly use the account's media entitlements, and high-volume use

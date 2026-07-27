@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from ytdlp_bot.domain.enums import MediaMode
+from ytdlp_bot.domain.enums import FailureCode, MediaMode
 from ytdlp_bot.domain.format_policy import (
     FormatSelection,
     build_format_selection,
@@ -60,11 +60,11 @@ class YtdlpOptions:
             if not Path(self.cookie_file).is_absolute():
                 raise ValueError("cookie file path must be absolute")
 
-    def materialize(self) -> dict[str, Any]:
+    def materialize(self, *, include_cookie: bool = True) -> dict[str, Any]:
         """Build the final yt-dlp options from trusted structured fields."""
         self.assert_allowlisted()
         opts = dict(self.raw)
-        if self.cookie_file is not None:
+        if include_cookie and self.cookie_file is not None:
             opts["cookiefile"] = self.cookie_file
         return opts
 
@@ -233,17 +233,52 @@ def progress_hook_to_event(status: dict[str, Any], *, sequence: int) -> dict[str
 def classify_ytdlp_error(message: str) -> str:
     """Map extractor/network errors to stable codes (no raw message leakage)."""
     lower = message.lower()
-    if "sign in" in lower or "login" in lower or "authentication" in lower:
-        return "AUTH_REQUIRED"
+    if (
+        "sign in" in lower
+        or "login" in lower
+        or "authentication" in lower
+        or "private video" in lower
+        or "members-only" in lower
+        or "confirm you're not a bot" in lower
+    ):
+        return FailureCode.AUTHENTICATION_REQUIRED.value
     if "drm" in lower or "protected" in lower:
-        return "DRM_PROTECTED"
+        return FailureCode.DRM_UNSUPPORTED.value
+    if (
+        "requested format is not available" in lower
+        or "only images are available" in lower
+        or "no video formats found" in lower
+    ):
+        return FailureCode.NO_MATCHING_FORMAT.value
     if "unsupported url" in lower or "no suitable" in lower:
-        return "UNSUPPORTED_SOURCE"
+        return FailureCode.UNSUPPORTED_SOURCE.value
     if "private" in lower or "unavailable" in lower:
-        return "SOURCE_UNAVAILABLE"
+        return FailureCode.UNSUPPORTED_SOURCE.value
     if "network" in lower or "timeout" in lower or "connection" in lower:
-        return "NETWORK_ERROR"
-    return "EXTRACTOR_ERROR"
+        return FailureCode.DOWNLOAD_FAILED.value
+    return FailureCode.DOWNLOAD_FAILED.value
+
+
+def _extract_info(
+    source_url: str,
+    *,
+    options: YtdlpOptions,
+    workspace: Path,
+    include_cookie: bool,
+) -> object:
+    """執行一次 yt-dlp, 並維持營運者 Cookie 檔案不可變."""
+    from yt_dlp import YoutubeDL  # type: ignore[import-untyped]
+
+    opts = options.materialize(include_cookie=include_cookie)
+    opts["paths"] = {"home": str(workspace)}
+    with YoutubeDL(opts) as ydl:
+        try:
+            return ydl.extract_info(source_url, download=True)
+        finally:
+            # yt-dlp 關閉時通常會把記憶體中的 Cookie jar 寫回檔案;
+            # 營運者管理的 secret 會由多個 worker 共用, 因此必須維持唯讀.
+            if include_cookie:
+                ydl.params.pop("cookiefile", None)
 
 
 def run_ytdlp_download(
@@ -253,25 +288,35 @@ def run_ytdlp_download(
     workspace: Path,
 ) -> tuple[Path, str]:
     """Invoke pinned yt-dlp Python API; return (primary path, original title)."""
-    from yt_dlp import YoutubeDL  # type: ignore[import-untyped]
+    from yt_dlp.utils import DownloadError  # type: ignore[import-untyped]
 
     options.assert_allowlisted()
-    if options.cookie_file is not None:
-        validate_cookie_file(options.cookie_file)
     workspace.mkdir(parents=True, exist_ok=True)
     before = {p.resolve() for p in workspace.rglob("*") if p.is_file()}
-    opts = options.materialize()
-    opts["paths"] = {"home": str(workspace)}
-    extracted: object | None = None
-    with YoutubeDL(opts) as ydl:
-        try:
-            extracted = ydl.extract_info(source_url, download=True)
-        finally:
-            # yt-dlp normally writes its in-memory jar back to cookiefile on
-            # close. Operator-managed secret files are immutable and shared
-            # across workers, so they must remain read-only.
-            if options.cookie_file is not None:
-                ydl.params.pop("cookiefile", None)
+    try:
+        # 公開媒體先以匿名方式下載, 避免消耗營運者帳號 session,
+        # 也避免受到僅限 Cookie client 的格式限制。
+        extracted = _extract_info(
+            source_url,
+            options=options,
+            workspace=workspace,
+            include_cookie=False,
+        )
+    except Exception as anonymous_error:
+        if (
+            options.cookie_file is None
+            or not isinstance(anonymous_error, DownloadError)
+            or classify_ytdlp_error(str(anonymous_error))
+            != FailureCode.AUTHENTICATION_REQUIRED.value
+        ):
+            raise
+        validate_cookie_file(options.cookie_file)
+        extracted = _extract_info(
+            source_url,
+            options=options,
+            workspace=workspace,
+            include_cookie=True,
+        )
     after = [p for p in workspace.rglob("*") if p.is_file() and p.resolve() not in before]
     if not after:
         # Fallback: any media-like file in workspace.

@@ -8,7 +8,7 @@
 
 - 具備 Docker 與 Docker Compose 的 Linux 主機
 - 開發需 CPython 3.13 與 [uv](https://github.com/astral-sh/uv)
-- FFmpeg / ffprobe（部署映像已內建）
+- FFmpeg / ffprobe、Deno 與 yt-dlp EJS challenge solver（部署映像已內建）
 - 由營運者依主機磁碟選擇 `capacity_bytes`
 
 ## 開發快速開始
@@ -60,6 +60,13 @@ cookie_file_ref = "file:/run/secrets/youtube_cookies.txt"
 摘要中；worker 只接收 Cookie 檔案路徑，並由 yt-dlp 在處理工作時開啟該
 唯讀檔案。yt-dlp 的 Cookie jar 回寫功能已停用；更新或輪替掛載檔案時應
 採用受控部署流程。
+
+下載會先嘗試不帶 Cookie 的匿名模式。只有 yt-dlp 明確判定來源需要登入
+時，才會驗證並使用營運者 Cookie 檔案重試一次。這可降低帳號 session
+使用量，並避免公開媒體受到登入專用 YouTube client 的格式限制。部署映像
+包含 yt-dlp 官方建議的 Deno runtime 與版本相容的 `yt-dlp-ejs`，以處理
+YouTube JavaScript challenge；更新 yt-dlp 時應一併更新並重新鎖定這些
+元件。
 
 請使用權限最小化的專用帳號。所有獲授權的 Bot 使用者都可能間接使用該
 帳號的媒體權益，大量下載也可能造成帳號受限。若 session 疑似外洩，請
