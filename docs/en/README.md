@@ -69,6 +69,45 @@ session is exposed. Cookies may help with account-required content but do not
 make deleted, inaccessible, DRM-protected, or otherwise unavailable media
 downloadable.
 
+#### Create the YouTube cookie file with a browser
+
+The optional host-side helper can create the Netscape file without opening your
+everyday browser profile or asking for your account password:
+
+```bash
+uv sync --extra login
+uv run ytdlp-youtube-login
+```
+
+For Chrome, Edge, and Brave, the helper first opens a normal browser process
+with a new temporary profile and no automation or remote-debugging flags. Log in
+to Google/YouTube manually, including CAPTCHA or 2FA when requested, then return
+to the terminal and press Enter. The helper closes the browser, briefly
+relaunches the same temporary profile with a loopback-only CDP endpoint, exports
+only Google/YouTube cookies, atomically writes
+`secrets/youtube_cookies.txt` with mode `0600`, and removes the temporary
+profile.
+
+Useful options:
+
+```bash
+uv run ytdlp-youtube-login --browser chrome
+uv run ytdlp-youtube-login --output secrets/youtube_cookies.txt --timeout 900
+```
+
+Supported explicit browser values are `chrome`, `edge`, `brave`, and
+`firefox`. Firefox is a last-resort Playwright fallback and Google may reject
+automated Firefox login. Install its browser binary first if needed:
+
+```bash
+uv run playwright install firefox
+uv run ytdlp-youtube-login --browser firefox
+```
+
+The helper never automates credentials, CAPTCHA, or 2FA. Run it only on a
+trusted operator workstation. Review the output location before copying or
+mounting the file, and rotate it when the session expires or is exposed.
+
 ## Deployment
 
 ```bash

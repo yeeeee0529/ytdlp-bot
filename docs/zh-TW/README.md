@@ -66,6 +66,44 @@ cookie_file_ref = "file:/run/secrets/youtube_cookies.txt"
 立即撤銷或輪替 Cookie 檔案。Cookies 可改善需要帳號權限的內容，但無法
 讓已刪除、無權存取、受 DRM 保護或本身不可用的媒體變得可下載。
 
+#### 使用瀏覽器建立 YouTube Cookie 檔
+
+選用的主機端工具可建立 Netscape Cookie 檔；它不會開啟日常瀏覽器
+profile，也不會要求輸入帳號密碼：
+
+```bash
+uv sync --extra login
+uv run ytdlp-youtube-login
+```
+
+使用 Chrome、Edge 或 Brave 時，工具會先用全新的暫存 profile 啟動一般
+瀏覽器程序，此階段不帶自動化或 remote-debugging 參數。請自行完成
+Google / YouTube 登入；若網站要求 CAPTCHA 或 2FA，也由你在瀏覽器內手動
+完成。確認登入後回到終端機按 Enter，工具會關閉瀏覽器，再以僅綁定
+loopback 的 CDP endpoint 短暫重開同一個暫存 profile，只匯出 Google /
+YouTube Cookies，以原子操作將 `secrets/youtube_cookies.txt` 寫成 `0600`
+權限，最後移除暫存 profile。
+
+常用選項：
+
+```bash
+uv run ytdlp-youtube-login --browser chrome
+uv run ytdlp-youtube-login --output secrets/youtube_cookies.txt --timeout 900
+```
+
+可指定的瀏覽器為 `chrome`、`edge`、`brave`、`firefox`。Firefox 是最後
+手段的 Playwright fallback，Google 可能拒絕自動化 Firefox 的登入；需要
+時請先安裝瀏覽器執行檔：
+
+```bash
+uv run playwright install firefox
+uv run ytdlp-youtube-login --browser firefox
+```
+
+工具不會自動輸入憑證、處理 CAPTCHA 或繞過 2FA。請只在受信任的營運者
+工作站執行；複製或掛載前先確認輸出位置，並在 session 過期或疑似外洩時
+重新產生 Cookie 檔。
+
 ## 部署
 
 ```bash

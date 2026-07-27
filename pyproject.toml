@@ -20,9 +20,13 @@ dev = [
     "ruff>=0.9.0",
     "pyright>=1.1.390",
 ]
+login = [
+    "playwright>=1.61.0,<2",
+]
 
 [project.scripts]
 ytdlp-bot = "ytdlp_bot.main:main"
+ytdlp-youtube-login = "ytdlp_bot.tools.youtube_login:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -60,6 +64,9 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["ytdlp_bot"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/ytdlp_bot/tools/youtube_login.py" = ["RUF001"]
 
 [tool.ruff.format]
 quote-style = "double"
